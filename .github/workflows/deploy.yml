@@ -1,0 +1,73 @@
+name: Deploy villa
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+    inputs:
+      source_ref:
+        description: Branch, tag, or commit in ElectricJack/jackkern.com
+        required: true
+        default: main
+        type: string
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build website source
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          repository: ElectricJack/jackkern.com
+          ref: ${{ inputs.source_ref || 'main' }}
+          persist-credentials: false
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - run: npm run build
+      - run: node tools/link-check.mjs dist
+
+      - name: Record the published source
+        run: |
+          node --input-type=module <<'JS'
+          import { execFileSync } from 'node:child_process';
+          import { writeFileSync } from 'node:fs';
+          const sourceCommit = execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+          writeFileSync('dist/deployment.json', JSON.stringify({
+            sourceRepository: 'ElectricJack/jackkern.com', sourceCommit,
+            deploymentRepository: process.env.GITHUB_REPOSITORY,
+            deploymentCommit: process.env.GITHUB_SHA,
+          }, null, 2) + '\n');
+          JS
+
+      - uses: actions/configure-pages@v6
+      - uses: actions/upload-pages-artifact@v5
+        with:
+          path: dist
+
+  deploy:
+    name: Publish root site
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v5
